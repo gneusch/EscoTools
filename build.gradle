@@ -41,4 +41,6 @@ dependencies {
     compile group: 'com.typesafe.akka', name: 'akka-stream_2.12', version: '2.5.20'
     // https://mvnrepository.com/artifact/org.apache.spark/spark-core
     compile group: 'org.apache.spark', name: 'spark-core_2.12', version: '2.4.0'
+    // https://mvnrepository.com/artifact/args4j/args4j
+    compile group: 'args4j', name: 'args4j', version: '2.33'
 }

@@ -1,15 +1,13 @@
 package esco
 
-import java.io.File
-
 import jobposting.JobPostingFile
 import org.apache.log4j.{Level, Logger}
-import org.apache.spark.{SparkConf, SparkContext}
 import utils.Languages
 
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent._
 import scala.concurrent.duration.Duration
+import org.kohsuke.args4j.Option
 
 object Main extends App {
 
@@ -143,12 +141,15 @@ object Main extends App {
 //
 //  }
 
+  @Option(name="-csvpath", usage="Set the path for CSV file")
+  private var csvpath: String = _
+
    def skillsToFile(path: String, lang: Languages): Unit = {
      val escoSkillHttp = new EscoQueuingSkillHttp(8192)
      val escoSkillListFuture = escoSkillHttp.getListOfSkills(lang).map( s => SkillList(s) )
      val escoSkillList = Await.result(escoSkillListFuture, Duration.Inf)
 
-     SkillList.writeToCsvFile(escoSkillList, new File(path))
+     SkillList.writeToCsvFile(escoSkillList, path)
    }
 
   skillsToFile(args(0), Languages.EN)

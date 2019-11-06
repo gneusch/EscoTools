@@ -1,11 +1,15 @@
 package esco
 
 import java.io.{BufferedWriter, File, FileWriter}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
+
 import akka.http.scaladsl.unmarshalling.Unmarshal
 import utils.{EscoJsonUtils, HttpTools, Languages, QueueingHttpsTools}
 
 import scala.concurrent.Future
 import spray.json._
+
 import scala.io.Source
 
 
@@ -60,8 +64,8 @@ object SkillList extends EscoJsonUtils {
     bw.close()
   }
 
-  def writeToCsvFile(skillList: SkillList, file: File): Unit = {
-    val bw = new BufferedWriter(new FileWriter(file))
+  def writeToCsvFile(skillList: SkillList, path: String): Unit = {
+    val bw = Files.newBufferedWriter(Paths.get(path), StandardCharsets.UTF_8)
     skillList.skills.foreach(
       skill => {
         bw.write(s"${skill.getId},${skill.preferredLabel.enLabel},${skill.preferredLabel.huLabel}")
