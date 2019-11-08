@@ -64,18 +64,21 @@ object SkillList extends EscoJsonUtils {
     bw.close()
   }
 
-  def writeToCsvFile(skillList: SkillList, path: String): Unit = {
+  def writeToCsvFile(skillList: SkillList, path: String, separator: String): Unit = {
     val bw = Files.newBufferedWriter(Paths.get(path), StandardCharsets.UTF_8)
+    val header = s"Id${separator}EnText${separator}HunText"
+    bw.write(header)
+    bw.write(System.lineSeparator)
     skillList.skills.foreach(
       skill => {
-        bw.write(s"${skill.getId},${skill.preferredLabel.enLabel},${skill.preferredLabel.huLabel}")
+        bw.write(s"${skill.getId}$separator${skill.preferredLabel.enLabel}$separator${skill.preferredLabel.huLabel}")
         bw.write(System.lineSeparator)
         skill.alternativeLabel match {
           case None =>
           case Some(alterLab) =>
             val alterLabels = alterLab.enLabels.getOrElse(Seq.empty).zipAll(alterLab.huLabels.getOrElse(Seq.empty), "null", "null")
             alterLabels.foreach( labelPair => {
-              bw.write(s"${skill.getId},${labelPair._1},${labelPair._2}")
+              bw.write(s"${skill.getId}$separator${labelPair._1}$separator${labelPair._2}")
               bw.write(System.lineSeparator)
             })
         }
