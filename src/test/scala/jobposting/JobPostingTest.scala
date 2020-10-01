@@ -3,7 +3,7 @@ package jobposting
 import jobposting.JobPosting._
 import org.junit.Assert._
 import org.junit.{Before, Test}
-import org.scalatest.junit.AssertionsForJUnit
+import org.scalatestplus.junit.AssertionsForJUnit
 import textmining.TextUtils._
 
 class JobPostingTest extends AssertionsForJUnit {

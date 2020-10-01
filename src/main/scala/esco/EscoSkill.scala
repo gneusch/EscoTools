@@ -5,17 +5,41 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 
 import akka.http.scaladsl.unmarshalling.Unmarshal
+import spray.json._
 import utils.{EscoJsonUtils, HttpTools, Languages, QueueingHttpsTools}
 
-import scala.concurrent.Future
-import spray.json._
-
+import scala.collection.mutable.{Set => MutableSet}
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 import scala.io.Source
 
 
-case class Self(resource_uri: String, title: String, uri: String)
+case class Resource(resource_uri: String, title: String, uri: String)
 
-case class TopConceptList(hasTopConcept: List[Self], self: Self)
+case class NodeConnectionInformation(self: Resource,
+                                     //relation types https://ec.europa.eu/esco/api/doc/esco_api_doc.html#list-view-skill
+                                     isTopConceptInScheme: Option[Seq[Resource]],
+                                     isInScheme: Seq[Resource], //e.g. "ESCO transversal skill groups" or "ESCO skills"
+                                     hasSkillType: Option[Seq[Resource]], //it it's type (className) is Skill. e.g. skill, knowledge
+                                     broaderHierarchyConcept: Option[Seq[Resource]],
+                                     broaderConcept: Option[Seq[Resource]],
+                                     narrowerConcept: Option[Seq[Resource]],
+                                     broaderSkillGroup: Option[Seq[Resource]],
+                                     broaderSkill: Option[Seq[Resource]],
+                                     narrowerSkill: Option[Seq[Resource]],
+                                     hasEssentialSkill: Option[Seq[Resource]],
+                                     hasOptionalSkill: Option[Seq[Resource]],
+                                     isOptionalForSkill: Option[Seq[Resource]],
+                                     isEssentialForSkill: Option[Seq[Resource]],
+                                     isEssentialForOccupation: Option[Seq[Resource]],
+                                     isOptionalForOccupation: Option[Seq[Resource]],
+                                    ) {
+  def getNarrowerConnections: Option[Seq[Resource]] = {
+    Option((narrowerConcept ++ narrowerSkill ++ hasEssentialSkill ++ hasOptionalSkill).flatten.toSeq).filter(_.nonEmpty)
+  }
+}
+
+case class TaxonomyConnections(hasTopConcept: List[Resource], self: Resource)
 
 case class Description(enDescription: String)
 
@@ -38,13 +62,65 @@ case class AlternativeLabel(enLabels: Option[Seq[String]], huLabels: Option[Seq[
   }
 }
 
-case class SelfConceptList(links: TopConceptList, classId: String, className: String, preferredLabel: PreferredLabel, title: String, uri: String)
+//ESCO's Taxonomy class
+case class Taxonomy(relations: TaxonomyConnections, //_links
+                    classId: String,
+                    className: String,
+                    preferredLabel: PreferredLabel,
+                    title: String,
+                    uri: String)
 
-case class Skill(className: String, uri: String, title: String, description: Option[Description], preferredLabel: PreferredLabel, alternativeLabel: Option[AlternativeLabel]) {
+//Represents here both an ESCO Skill and an ESCO Concept class
+case class Node(className: String,
+                uri: String,
+                title: String,
+                description: Option[Description],
+                preferredLabel: PreferredLabel,
+                alternativeLabel: Option[AlternativeLabel],
+                relations: NodeConnectionInformation //_links
+                ) {
+
+  def equalsResource(obj: Resource): Boolean =
+    uri == obj.uri && title == obj.title
+
   def getId: String = uri.split("/").last
 }
 
-case class SkillList(skills: Seq[Skill]) {
+object NodeUtils extends EscoHttp {
+  private var accumulator: MutableSet[Node] = _
+
+  def getNarrowerNodes(node: Node): MutableSet[Node] = {
+    accumulator = MutableSet()
+    fillAccumulator(node)
+    accumulator
+  }
+
+  private def fillAccumulator(node: Node): Unit = {
+    if(accumulator.add(node)) {
+      node.relations.getNarrowerConnections.foreach {
+        _.foreach(
+          innerNode => {
+            if(!accumulator.exists(_.equalsResource(innerNode))) {
+              fillAccumulator(getNode(innerNode.resource_uri, Languages.EN))
+            }
+          }
+        )
+      }
+    }
+  }
+
+  /*private def getNarrowerNodesRecursively(node: Node, accumulator: Seq[Node] = Seq()): Seq[Node] = node.relations.getNarrowerConnections match {
+      case None => accumulator :+ node
+      case Some(resources) => resources.flatMap(
+        innerNode => {
+          println(s"Getting node: ${innerNode.title}")
+          getNarrowerNodesRecursively(getNode(innerNode.resource_uri, Languages.EN), accumulator)
+        }
+      ) :+ node
+    }*/
+}
+
+case class NodeList(skills: Seq[Node]) {
   def getPreferredLabelList(lang: Languages): Seq[String] = skills.map(_.preferredLabel.getLabel(lang))
 
   def getAlternativeLabel(lang: Languages): Seq[String] = skills.flatMap(
@@ -57,14 +133,14 @@ case class SkillList(skills: Seq[Skill]) {
   def getLabelList(lang: Languages): Seq[String] = getPreferredLabelList(lang) ++ getAlternativeLabel(lang)
 }
 
-object SkillList extends EscoJsonUtils {
-  def writeToJsonFile(skillList: SkillList, file: File): Unit = {
+object NodeList extends EscoJsonUtils {
+  def writeToJsonFile(skillList: NodeList, file: File): Unit = {
     val bw = new BufferedWriter(new FileWriter(file))
     bw.write(skillList.toJson.toString)
     bw.close()
   }
 
-  def writeToCsvFile(skillList: SkillList, path: String, separator: String): Unit = {
+  def writeToCsvFile(skillList: NodeList, path: String, separator: String): Unit = {
     val bw = Files.newBufferedWriter(Paths.get(path), StandardCharsets.UTF_8)
     val header = s"Id${separator}EnText${separator}HunText"
     bw.write(header)
@@ -77,7 +153,7 @@ object SkillList extends EscoJsonUtils {
           case None =>
           case Some(alterLab) =>
             val alterLabels = alterLab.enLabels.getOrElse(Seq.empty).zipAll(alterLab.huLabels.getOrElse(Seq.empty), "null", "null")
-            alterLabels.foreach( labelPair => {
+            alterLabels.foreach(labelPair => {
               bw.write(s"${skill.getId}$separator${labelPair._1}$separator${labelPair._2}")
               bw.write(System.lineSeparator)
             })
@@ -87,9 +163,9 @@ object SkillList extends EscoJsonUtils {
     bw.close()
   }
 
-  def fromJsonFile(path: String): SkillList = {
+  def fromJsonFile(path: String): NodeList = {
     val bufferedSource = Source.fromFile(path)
-    val skillList = bufferedSource.getLines.mkString.parseJson.convertTo[SkillList]
+    val skillList = bufferedSource.getLines.mkString.parseJson.convertTo[NodeList]
     bufferedSource.close
     skillList
   }
@@ -102,27 +178,27 @@ trait EscoSkill extends EscoJsonUtils with HttpTools with EscoService {
   final val SKILL_LIST_URL = "http://data.europa.eu/esco/concept-scheme/skills"
 }
 
-class EscoSkillHttp extends EscoService with EscoSkill {
+trait EscoHttp extends EscoService with EscoSkill {
 
   def getSkillTitleList(langCode: Languages): Future[List[String]] = {
     val url = getSkillListUrl(langCode)
     val responseFuture = getInFuture(s"$API_URL$RESOURCE_URI$URI_PROP$url")
     responseFuture flatMap {
       response =>
-        Unmarshal(response.entity).to[SelfConceptList] map {
+        Unmarshal(response.entity).to[Taxonomy] map {
           skillListResponse =>
-            skillListResponse.links.hasTopConcept map {
+            skillListResponse.relations.hasTopConcept map {
               self => self.title
             }
         }
     }
   }
 
-  def getSkillList(langCode: Languages): Future[SelfConceptList] = {
+  def getSkillList(langCode: Languages): Future[Taxonomy] = {
     val url = getSkillListUrl(langCode)
     val responseFuture = getInFuture(s"$API_URL$RESOURCE_URI$URI_PROP$url")
     responseFuture flatMap {
-      response => Unmarshal(response.entity).to[SelfConceptList]
+      response => Unmarshal(response.entity).to[Taxonomy]
     }
   }
 
@@ -131,24 +207,32 @@ class EscoSkillHttp extends EscoService with EscoSkill {
     case _ => s"$SKILL_LIST_URL$LANGUAGE_PROP${Languages.EN.name}"
   }
 
-  def getSkill(uri: String, langCode: Languages): Future[Skill] = {
+  def getSkill(uri: String, langCode: Languages): Future[Node] = {
     val url = s"$SKILL_URL$URI_PROP$uri$LANGUAGE_PROP${langCode.name}"
-    val responeseFuture = getInFuture(url)
+    getNodeInFuture(url, langCode)
+  }
+
+  def getNodeInFuture(uri: String, langCode: Languages): Future[Node] = {
+    val responeseFuture = getInFuture(uri)
     responeseFuture flatMap {
-      response => Unmarshal(response.entity).to[Skill]
+      response => Unmarshal(response.entity).to[Node]
     }
   }
 
-  def getListOfSkills(lang: Languages): Future[List[Skill]] = {
+  def getNode(uri: String, langCode: Languages): Node = {
+    Await.result(getNodeInFuture(uri, langCode), Duration.apply(5, SECONDS))
+  }
+
+  def getListOfSkills(lang: Languages): Future[List[Node]] = {
     getSkillList(lang).flatMap(
-      skillList => Future.sequence(skillList.links.hasTopConcept map {
+      skillList => Future.sequence(skillList.relations.hasTopConcept map {
         individualSkill => getSkill(individualSkill.uri, lang)
       })
     )
   }
 }
 
-class EscoQueuingSkillHttp(queueSize: Int = 32) extends EscoSkillHttp {
+class EscoQueuingHttp(queueSize: Int = 32) extends EscoHttp {
 
   def queueingHttpTools(url: String) = new QueueingHttpsTools(url, queueSize)
 
@@ -161,11 +245,11 @@ class EscoQueuingSkillHttp(queueSize: Int = 32) extends EscoSkillHttp {
     }
   }*/
 
-  override def getSkill(uri: String, langCode: Languages): Future[Skill] = {
+  override def getSkill(uri: String, langCode: Languages): Future[Node] = {
     val url = s"$API_URI$RESOURCE_URI$SKILL_URI$URI_PROP$uri$LANGUAGE_PROP${langCode.name}"
     val responeseFuture = httpQuery.getInFuture(url)
     responeseFuture flatMap {
-      response => Unmarshal(response.entity).to[Skill]
+      response => Unmarshal(response.entity).to[Node]
     }
   }
 }

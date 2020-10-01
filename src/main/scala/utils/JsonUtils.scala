@@ -1,16 +1,16 @@
 package utils
 
-import jobposting.JobPosting
-import spray.json._
-import org.joda.time.{DateTime => JodaDateTime}
-
-import scala.util.{Failure, Success, Try}
-import scala.collection.breakOut
-import DefaultJsonProtocol._
 import akka.http.scaladsl.unmarshalling.{FromEntityUnmarshaller, Unmarshaller}
 import esco._
+import jobposting.JobPosting
+import org.joda.time.{DateTime => JodaDateTime}
+import spray.json.DefaultJsonProtocol._
+import spray.json._
 
-trait JsonUtils {
+import scala.collection.breakOut
+import scala.util.{Failure, Success, Try}
+
+trait JsonUtils extends CollectionFormats with AdditionalFormats with StandardFormats {
   def getOptionalField[T: JsonReader](fields: Map[String, JsValue], key: String): Option[T] = {
     fields.get(key) match {
       case Some(jsValue) => Some(jsValue.convertTo[T])
@@ -62,28 +62,28 @@ trait JobPostingJsonUtils extends JsonUtils with SupportTools {
 }
 
 trait EscoJsonUtils extends JsonUtils {
-  def parseToSkillList(jsonStr: String): SelfConceptList = {
-    jsonStr.parseJson.convertTo[SelfConceptList]
+  def parseToSkillList(jsonStr: String): Taxonomy = {
+    jsonStr.parseJson.convertTo[Taxonomy]
   }
 
-  implicit def skillListUnmarshaller: FromEntityUnmarshaller[SelfConceptList] = {
+  implicit def skillListUnmarshaller: FromEntityUnmarshaller[Taxonomy] = {
     Unmarshaller.stringUnmarshaller.map(parseToSkillList)
   }
 
-  def parseToSkill(jsonStr: String): Skill = {
-    jsonStr.parseJson.convertTo[Skill]
+  def parseToSkill(jsonStr: String): Node = {
+    jsonStr.parseJson.convertTo[Node]
   }
 
-  implicit def skillUnmarshaller: FromEntityUnmarshaller[Skill] = {
+  implicit def skillUnmarshaller: FromEntityUnmarshaller[Node] = {
     Unmarshaller.stringUnmarshaller.map(parseToSkill)
   }
 
-  implicit val selfConceptListFormat: JsonFormat[SelfConceptList] =
-    new JsonFormat[SelfConceptList] {
-      override def read(json: JsValue): SelfConceptList = {
+  implicit val taxonomyFormat: JsonFormat[Taxonomy] =
+    new JsonFormat[Taxonomy] {
+      override def read(json: JsValue): Taxonomy = {
         val fields = json.asJsObject("SkillList object expected").fields
-        SelfConceptList(
-          links = fields("_links").convertTo[TopConceptList],
+        Taxonomy(
+          relations = fields("_links").convertTo[TaxonomyConnections],
           classId = fields("classId").convertTo[String],
           className = fields("className").convertTo[String],
           preferredLabel = fields("preferredLabel").convertTo[PreferredLabel],
@@ -92,24 +92,43 @@ trait EscoJsonUtils extends JsonUtils {
         )
       }
 
-      override def write(obj: SelfConceptList): JsValue = ???
+      override def write(obj: Taxonomy): JsValue = ???
     }
 
-  implicit val skillFormat: JsonFormat[Skill] =
-    new JsonFormat[Skill] {
-      override def read(json: JsValue): Skill = {
+  implicit val skillFormat: JsonFormat[Node] =
+    new JsonFormat[Node] {
+      override def read(json: JsValue): Node = {
         val fields = json.asJsObject("Skill object expected").fields
-        Skill(
+        Node(
           className = fields("className").convertTo[String],
           uri = fields("uri").convertTo[String],
           title = fields("title").convertTo[String],
           description = getOptionalField(fields, "description")(descriptionFormat),
           preferredLabel = fields("preferredLabel").convertTo[PreferredLabel],
-          alternativeLabel = getOptionalField[AlternativeLabel](fields,"alternativeLabel")
+          alternativeLabel = getOptionalField[AlternativeLabel](fields,"alternativeLabel"),
+          relations = fields("_links").convertTo[NodeConnectionInformation]
         )
       }
 
-      override def write(obj: Skill): JsValue = (obj.description, obj.alternativeLabel) match {
+      override def write(obj: Node): JsValue = {
+        val desc = obj.description match {
+          case None => JsNull
+          case Some(desc) => desc.toJson
+        }
+        val altLab = obj.alternativeLabel match {
+          case None => JsNull
+          case Some(altLab) => altLab.toJson
+        }
+
+        JsObject(
+          "className" -> JsString(obj.className),
+          "uri" -> JsString(obj.uri),
+          "title" -> JsString(obj.title),
+          "description" -> desc,
+          "preferredLabel" -> obj.preferredLabel.toJson,
+          "alternativeLabel" -> altLab
+        )
+      }/*(obj.description, obj.alternativeLabel) match {
           //TODO it can be done better i'm sure :-) https://stackoverflow.com/questions/10819344/how-to-represent-optional-fields-in-spray-json
           case (Some(desc), Some(altLab)) => JsObject(
             "className" -> JsString(obj.className),
@@ -139,7 +158,7 @@ trait EscoJsonUtils extends JsonUtils {
             "title" -> JsString(obj.title),
             "preferredLabel" -> obj.preferredLabel.toJson
           )
-      }
+      }*/
     }
 
   implicit val preferredLabelFormat: JsonFormat[PreferredLabel] =
@@ -179,21 +198,20 @@ trait EscoJsonUtils extends JsonUtils {
         val alternativeLabels = Seq(getJsAlternateLabel(obj.enLabels,Languages.EN), getJsAlternateLabel(obj.huLabels,Languages.HU)).flatten
         JsObject(alternativeLabels.toMap)
       }
-
     }
 
-  implicit val selfFormat: JsonFormat[Self] =
-    new JsonFormat[Self] {
-      override def read(json: JsValue): Self = {
+  implicit val resourceFormat: JsonFormat[Resource] =
+    new JsonFormat[Resource] {
+      override def read(json: JsValue): Resource = {
         val fields = json.asJsObject("Self object expected").fields
-        Self(
+        Resource(
           resource_uri = fields("href").convertTo[String],
           title = fields("title").convertTo[String],
           uri = fields("uri").convertTo[String]
         )
       }
 
-      override def write(obj: Self): JsValue = ???
+      override def write(obj: Resource): JsValue = ???
     }
 
   implicit val descriptionFormat: JsonFormat[Description] =
@@ -212,6 +230,7 @@ trait EscoJsonUtils extends JsonUtils {
       )
     }
 
-  implicit val topConceptListFormat: JsonFormat[TopConceptList] = jsonFormat2(TopConceptList)
-  implicit val skillListFormat: JsonFormat[SkillList] = jsonFormat1(SkillList.apply) //https://github.com/spray/spray-json/issues/74
+  implicit val conceptConnectionInformationFormat: JsonFormat[NodeConnectionInformation] = jsonFormat16(NodeConnectionInformation)
+  implicit val taxonomyConnectionsFormat: JsonFormat[TaxonomyConnections] = jsonFormat2(TaxonomyConnections)
+  implicit val skillListFormat: JsonFormat[NodeList] = jsonFormat1(NodeList.apply) //https://github.com/spray/spray-json/issues/74
 }
