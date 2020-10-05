@@ -78,6 +78,14 @@ trait EscoJsonUtils extends JsonUtils {
     Unmarshaller.stringUnmarshaller.map(parseToSkill)
   }
 
+  def parseToSearchResult(jsonStr: String): SearchResult = {
+    jsonStr.parseJson.convertTo[SearchResult]
+  }
+
+  implicit def searchResultUnmarshaller: FromEntityUnmarshaller[SearchResult] = {
+    Unmarshaller.stringUnmarshaller.map(parseToSearchResult)
+  }
+
   implicit val taxonomyFormat: JsonFormat[Taxonomy] =
     new JsonFormat[Taxonomy] {
       override def read(json: JsValue): Taxonomy = {
@@ -105,7 +113,10 @@ trait EscoJsonUtils extends JsonUtils {
           title = fields("title").convertTo[String],
           description = getOptionalField(fields, "description")(descriptionFormat),
           preferredLabel = fields("preferredLabel").convertTo[PreferredLabel],
-          alternativeLabel = getOptionalField[AlternativeLabel](fields,"alternativeLabel"),
+          alternativeLabel = getOptionalField[AlternativeLabel](fields,"alternativeLabel") match {
+            case Some(AlternativeLabel(None, None)) => None
+            case altLab => altLab
+          },
           relations = fields("_links").convertTo[NodeConnectionInformation]
         )
       }
@@ -126,48 +137,26 @@ trait EscoJsonUtils extends JsonUtils {
           "title" -> JsString(obj.title),
           "description" -> desc,
           "preferredLabel" -> obj.preferredLabel.toJson,
-          "alternativeLabel" -> altLab
+          "alternativeLabel" -> altLab,
+          "_links" -> obj.relations.toJson
         )
-      }/*(obj.description, obj.alternativeLabel) match {
-          //TODO it can be done better i'm sure :-) https://stackoverflow.com/questions/10819344/how-to-represent-optional-fields-in-spray-json
-          case (Some(desc), Some(altLab)) => JsObject(
-            "className" -> JsString(obj.className),
-            "uri" -> JsString(obj.uri),
-            "title" -> JsString(obj.title),
-            "description" -> desc.toJson,
-            "preferredLabel" -> obj.preferredLabel.toJson,
-            "alternativeLabel" -> altLab.toJson
-          )
-          case (Some(desc), None) => JsObject(
-            "className" -> JsString(obj.className),
-            "uri" -> JsString(obj.uri),
-            "title" -> JsString(obj.title),
-            "description" -> desc.toJson,
-            "preferredLabel" -> obj.preferredLabel.toJson
-          )
-          case (None, Some(altLab)) => JsObject(
-            "className" -> JsString(obj.className),
-            "uri" -> JsString(obj.uri),
-            "title" -> JsString(obj.title),
-            "preferredLabel" -> obj.preferredLabel.toJson,
-            "alternativeLabel" -> altLab.toJson
-          )
-          case (None, None) => JsObject(
-            "className" -> JsString(obj.className),
-            "uri" -> JsString(obj.uri),
-            "title" -> JsString(obj.title),
-            "preferredLabel" -> obj.preferredLabel.toJson
-          )
-      }*/
+      }
     }
 
   implicit val preferredLabelFormat: JsonFormat[PreferredLabel] =
     new JsonFormat[PreferredLabel] {
+      def getWithFallback(fields: Map[String, JsValue], key: String): String = {
+        Try(fields(key)) match {
+          case Success(value) => value.convertTo[String]
+          case Failure(_) => "N/A"
+        }
+      }
+
       override def read(json: JsValue): PreferredLabel = {
         val fields = json.asJsObject("PreferredLabel object expected").fields
         PreferredLabel(
-          huLabel = fields(Languages.HU.name).convertTo[String],
-          enLabel = fields(Languages.EN.name).convertTo[String]
+          huLabel = getWithFallback(fields, Languages.HU.name),
+          enLabel = getWithFallback(fields, Languages.EN.name)
         )
       }
 
@@ -180,17 +169,22 @@ trait EscoJsonUtils extends JsonUtils {
   implicit val alternativeLabel: JsonFormat[AlternativeLabel] =
     new JsonFormat[AlternativeLabel] {
       override def read(json: JsValue): AlternativeLabel = {
-        val fields = json.asJsObject("AlternativeLabel object expected").fields
-        AlternativeLabel(enLabels = getOptionalField[Seq[String]](fields, Languages.EN.name), huLabels = getOptionalField[Seq[String]](fields, Languages.HU.name))
+        val fields = Try(json.asJsObject(s"AlternativeLabel object expected, but got: $json").fields) match {
+          case Success(value) => value
+          case Failure(e) => Map.empty[String, JsValue]
+        }
+        AlternativeLabel(
+          enLabels = getOptionalField[Seq[String]](fields, Languages.EN.name),
+          huLabels = getOptionalField[Seq[String]](fields, Languages.HU.name)
+        )
       }
 
       def getJsAlternateLabel(labelList: Option[Seq[String]], lang: Languages): Option[(String, JsValue)] = {
         labelList match {
           case None => None
-          case Some(list) => {
+          case Some(list) =>
             val labels: Vector[JsValue] = list.map(JsString(_))(breakOut)
             Some((lang.name, JsArray(labels)))
-          }
         }
       }
 
@@ -203,7 +197,7 @@ trait EscoJsonUtils extends JsonUtils {
   implicit val resourceFormat: JsonFormat[Resource] =
     new JsonFormat[Resource] {
       override def read(json: JsValue): Resource = {
-        val fields = json.asJsObject("Self object expected").fields
+        val fields = json.asJsObject("Resource object expected").fields
         Resource(
           resource_uri = fields("href").convertTo[String],
           title = fields("title").convertTo[String],
@@ -211,8 +205,39 @@ trait EscoJsonUtils extends JsonUtils {
         )
       }
 
-      override def write(obj: Resource): JsValue = ???
+      override def write(obj: Resource): JsValue = JsObject(
+        "href" -> JsString(obj.resource_uri),
+        "title" -> JsString(obj.title),
+        "uri" -> JsString(obj.uri)
+      )
     }
+
+  implicit val resourceAddressFormat: JsonFormat[ResourceAddress] =
+    new JsonFormat[ResourceAddress] {
+      override def read(json: JsValue): ResourceAddress = {
+        val fields = json.asJsObject("ResourceAddress object expected").fields
+        ResourceAddress(
+          resource_uri = fields("href").convertTo[String],
+          uri = fields("uri").convertTo[String]
+        )
+      }
+
+      override def write(obj: ResourceAddress): JsValue = ???
+    }
+
+  implicit val searchResultFormat: JsonFormat[SearchResult] = new JsonFormat[SearchResult] {
+    override def read(json: JsValue): SearchResult = {
+      val fields = json.asJsObject("Resource object expected").fields
+      SearchResult(
+        count = fields("count").convertTo[Int],
+        offset = fields("offset").convertTo[Int],
+        total = fields("total").convertTo[Int],
+        concepts = fields("concepts").convertTo[Seq[ResourceAddress]]
+      )
+    }
+
+    override def write(obj: SearchResult): JsValue = ???
+  }
 
   implicit val descriptionFormat: JsonFormat[Description] =
     new JsonFormat[Description] {
@@ -230,7 +255,7 @@ trait EscoJsonUtils extends JsonUtils {
       )
     }
 
-  implicit val conceptConnectionInformationFormat: JsonFormat[NodeConnectionInformation] = jsonFormat16(NodeConnectionInformation)
+  implicit val conceptConnectionInformationFormat: JsonFormat[NodeConnectionInformation] = jsonFormat17(NodeConnectionInformation)
   implicit val taxonomyConnectionsFormat: JsonFormat[TaxonomyConnections] = jsonFormat2(TaxonomyConnections)
   implicit val skillListFormat: JsonFormat[NodeList] = jsonFormat1(NodeList.apply) //https://github.com/spray/spray-json/issues/74
 }
