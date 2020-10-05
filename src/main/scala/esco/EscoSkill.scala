@@ -15,11 +15,13 @@ import scala.io.Source
 
 
 case class Resource(resource_uri: String, title: String, uri: String)
+case class ResourceAddress(resource_uri: String, uri: String)
 
 case class NodeConnectionInformation(self: Resource,
                                      //relation types https://ec.europa.eu/esco/api/doc/esco_api_doc.html#list-view-skill
                                      isTopConceptInScheme: Option[Seq[Resource]],
-                                     isInScheme: Seq[Resource], //e.g. "ESCO transversal skill groups" or "ESCO skills"
+                                     hasTopConcept: Option[Seq[Resource]], //Because of taxonomy class
+                                     isInScheme: Option[Seq[Resource]], //e.g. "ESCO transversal skill groups" or "ESCO skills" - optional because of the taxonomy class
                                      hasSkillType: Option[Seq[Resource]], //it it's type (className) is Skill. e.g. skill, knowledge
                                      broaderHierarchyConcept: Option[Seq[Resource]],
                                      broaderConcept: Option[Seq[Resource]],
@@ -70,15 +72,17 @@ case class Taxonomy(relations: TaxonomyConnections, //_links
                     title: String,
                     uri: String)
 
-//Represents here both an ESCO Skill and an ESCO Concept class
-case class Node(className: String,
+//Represents here both an ESCO Skill and an ESCO Concept class; also works for a Taxonomy (ConceptScheme) Node
+case class Node(title: String,
+                className: String,
                 uri: String,
-                title: String,
                 description: Option[Description],
                 preferredLabel: PreferredLabel,
                 alternativeLabel: Option[AlternativeLabel],
                 relations: NodeConnectionInformation //_links
                 ) {
+
+  override def equals(obj: Any): Boolean = obj.asInstanceOf[Node].getId == this.getId
 
   def equalsResource(obj: Resource): Boolean =
     uri == obj.uri && title == obj.title
@@ -171,6 +175,8 @@ object NodeList extends EscoJsonUtils {
   }
 }
 
+case class SearchResult(count: Int, concepts: Seq[ResourceAddress], offset: Int, total: Int)
+
 trait EscoSkill extends EscoJsonUtils with HttpTools with EscoService {
 
   final val SKILL_URI = "/skill"
@@ -220,7 +226,18 @@ trait EscoHttp extends EscoService with EscoSkill {
   }
 
   def getNode(uri: String, langCode: Languages): Node = {
-    Await.result(getNodeInFuture(uri, langCode), Duration.apply(5, SECONDS))
+    Await.result(getNodeInFuture(uri, langCode), Duration.apply(60, SECONDS))
+  }
+
+  def getSearchResultInFuture(uri: String, langCode: Languages): Future[SearchResult] = {
+    val responeseFuture = getInFuture(uri)
+    responeseFuture flatMap {
+      response => Unmarshal(response.entity).to[SearchResult]
+    }
+  }
+
+  def getSearchResult(uri: String, langCode: Languages): SearchResult = {
+    Await.result(getSearchResultInFuture(uri, langCode), Duration.apply(5, SECONDS))
   }
 
   def getListOfSkills(lang: Languages): Future[List[Node]] = {
@@ -237,13 +254,6 @@ class EscoQueuingHttp(queueSize: Int = 32) extends EscoHttp {
   def queueingHttpTools(url: String) = new QueueingHttpsTools(url, queueSize)
 
   val httpQuery: QueueingHttpsTools = queueingHttpTools(ESCO_HOST)
-
-  /*def getSkill(uri: String): Future[Skill] = {
-    val responeseFuture = httpQuery.getInFuture(uri)
-    responeseFuture flatMap {
-      response => Unmarshal(response.entity).to[Skill]
-    }
-  }*/
 
   override def getSkill(uri: String, langCode: Languages): Future[Node] = {
     val url = s"$API_URI$RESOURCE_URI$SKILL_URI$URI_PROP$uri$LANGUAGE_PROP${langCode.name}"
